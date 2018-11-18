@@ -12,6 +12,9 @@ import android.view.ViewAnimationUtils;
 import android.view.ViewGroup;
 import android.view.animation.Interpolator;
 
+import com.gordonwong.materialsheetfab.MaterialSheetFab.RevealXDirection;
+import com.gordonwong.materialsheetfab.MaterialSheetFab.RevealYDirection;
+
 import io.codetail.animation.SupportAnimator;
 
 /**
@@ -28,6 +31,8 @@ public class MaterialSheetAnimation {
 	private int sheetColor;
 	private int fabColor;
 	private Interpolator interpolator;
+	private RevealXDirection revealXDirection;
+	private RevealYDirection revealYDirection;
 	private Method setCardBackgroundColor;
 	private boolean isSupportCardView;
 
@@ -37,8 +42,10 @@ public class MaterialSheetAnimation {
 		this.sheetColor = sheetColor;
 		this.fabColor = fabColor;
 		this.interpolator = interpolator;
-		isSupportCardView = (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP)
-				&& sheet.getClass().getName().equals(SUPPORT_CARDVIEW_CLASSNAME);
+		// Default reveal direction is up and to the left (for FABs in the bottom right corner)
+		revealXDirection = RevealXDirection.LEFT;
+		revealYDirection = RevealYDirection.UP;
+		isSupportCardView = sheet.getClass().getName().equals(SUPPORT_CARDVIEW_CLASSNAME);
 		// Get setCardBackgroundColor() method
 		if (isSupportCardView) {
 			try {
@@ -65,28 +72,56 @@ public class MaterialSheetAnimation {
 		// Get FAB's coordinates
 		int[] fabCoords = new int[2];
 		fab.getLocationOnScreen(fabCoords);
-		int fabRight = fabCoords[0] + fab.getWidth();
-		int fabBottom = fabCoords[1] + fab.getHeight();
 
 		// Get sheet's coordinates
 		int[] sheetCoords = new int[2];
 		sheet.getLocationOnScreen(sheetCoords);
+
+		// NOTE: Use the diffs between the positions of the FAB and sheet to align the sheet.
+		// We have to use the diffs because the coordinates returned by getLocationOnScreen()
+		// include the status bar and any other system UI elements, meaning the coordinates
+		// aren't representative of the usable screen space.
+		int leftDiff = sheetCoords[0] - fabCoords[0];
+		int rightDiff = (sheetCoords[0] + sheet.getWidth()) - (fabCoords[0] + fab.getWidth());
+		int topDiff = sheetCoords[1] - fabCoords[1];
+		int bottomDiff = (sheetCoords[1] + sheet.getHeight()) - (fabCoords[1] + fab.getHeight());
+
+		// NOTE: Preserve the sheet's margins to allow users to shift the sheet's position
+		// to compensate for the fact that the design support library's FAB has extra
+		// padding within the view
 		ViewGroup.MarginLayoutParams sheetLayoutParams = (ViewGroup.MarginLayoutParams) sheet
 				.getLayoutParams();
-		int sheetRight = sheetCoords[0] + sheet.getWidth() + sheetLayoutParams.rightMargin;
-		int sheetBottom = sheetCoords[1] + sheet.getHeight() + sheetLayoutParams.bottomMargin;
-
-		int rightDiff = (sheetRight - fabRight);
-		int bottomDiff = (sheetBottom - fabBottom);
 
 		// Set sheet's new coordinates (only if there is a change in coordinates because
 		// setting the same coordinates can cause the view to "drift" - moving 0.5 to 1 pixels
 		// around the screen)
 		if (rightDiff != 0) {
-			sheet.setX(sheet.getX() - rightDiff);
+			float sheetX = sheet.getX();
+			// Align the right side of the sheet with the right side of the FAB if
+			// doing so would not move the sheet off the screen
+			if (rightDiff <= sheetX) {
+				sheet.setX(sheetX - rightDiff - sheetLayoutParams.rightMargin);
+				revealXDirection = RevealXDirection.LEFT;
+			}
+			// Otherwise, align the left side of the sheet with the left side of the FAB
+			else if (leftDiff != 0 && leftDiff <= sheetX) {
+				sheet.setX(sheetX - leftDiff + sheetLayoutParams.leftMargin);
+				revealXDirection = RevealXDirection.RIGHT;
+			}
 		}
+
 		if (bottomDiff != 0) {
-			sheet.setY(sheet.getY() - bottomDiff);
+			float sheetY = sheet.getY();
+			// Align the bottom of the sheet with the bottom of the FAB
+			if (bottomDiff <= sheetY) {
+				sheet.setY(sheetY - bottomDiff - sheetLayoutParams.bottomMargin);
+				revealYDirection = RevealYDirection.UP;
+			}
+			// Otherwise, align the top of the sheet with the top of the FAB
+			else if (topDiff != 0 && topDiff <= sheetY) {
+				sheet.setY(sheetY - topDiff + sheetLayoutParams.topMargin);
+				revealYDirection = RevealYDirection.DOWN;
+			}
 		}
 	}
 
@@ -137,7 +172,8 @@ public class MaterialSheetAnimation {
 		// Start animations
 		startCircularRevealAnim(sheet, getSheetRevealCenterX(), getSheetRevealCenterY(fab),
 				startRadius, endRadius, sheetDuration, interpolator, revealListener);
-		startColorAnim(sheet, startColor, endColor, sheetColorDuration, interpolator, colorListener);
+		startColorAnim(sheet, startColor, endColor, sheetColorDuration, interpolator,
+				colorListener);
 	}
 
 	protected void startCircularRevealAnim(View view, int centerX, int centerY, float startRadius,
@@ -145,10 +181,12 @@ public class MaterialSheetAnimation {
 			final AnimationListener listener) {
 		// Use native circular reveal on Android 5.0+
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-			// Setup animation
 			// Native circular reveal uses coordinates relative to the view
-			Animator anim = ViewAnimationUtils.createCircularReveal(view, centerX, centerY,
-					startRadius, endRadius);
+			int relativeCenterX = (int) (centerX - view.getX());
+			int relativeCenterY = (int) (centerY - view.getY());
+			// Setup animation
+			Animator anim = ViewAnimationUtils.createCircularReveal(view, relativeCenterX,
+					relativeCenterY, startRadius, endRadius);
 			anim.setDuration(duration);
 			anim.setInterpolator(interpolator);
 			// Add listener
@@ -171,11 +209,9 @@ public class MaterialSheetAnimation {
 			anim.start();
 		} else {
 			// Circular reveal library uses absolute coordinates
-			centerX += view.getX();
-			centerY += view.getY();
 			// Setup animation
-			SupportAnimator anim = io.codetail.animation.ViewAnimationUtils.createCircularReveal(
-					view, centerX, centerY, startRadius, endRadius);
+			SupportAnimator anim = io.codetail.animation.ViewAnimationUtils
+					.createCircularReveal(view, centerX, centerY, startRadius, endRadius);
 			anim.setDuration((int) duration);
 			anim.setInterpolator(interpolator);
 			// Add listener
@@ -227,8 +263,8 @@ public class MaterialSheetAnimation {
 				// Update background color
 				Integer color = (Integer) animator.getAnimatedValue();
 
-				// Use setCardBackgroundColor() to avoid crashes if a CardView is used as a sheet on
-				// Android < 5.0
+				// Use CardView.setCardBackgroundColor() to avoid crashes on Android < 5.0 and to
+				// properly set the card's background color without removing the card's other styles
 				// See https://github.com/gowong/material-sheet-fab/pull/2 and
 				// https://code.google.com/p/android/issues/detail?id=77843
 				if (isSupportCardView) {
@@ -242,7 +278,7 @@ public class MaterialSheetAnimation {
 						}
 					}
 				}
-				// Set background color for CardView on Android >= 5.0 and all other views
+				// Set background color for all other views
 				else {
 					view.setBackgroundColor(color);
 				}
@@ -261,26 +297,23 @@ public class MaterialSheetAnimation {
 	}
 
 	/**
-	 * @return Sheet's center X coordinate
+	 * @return Sheet reveal's center X coordinate
 	 */
-	public float getSheetCenterX() {
-		return sheet.getX() + getSheetRevealCenterX();
+	public int getSheetRevealCenterX() {
+		return (int) (sheet.getX() + (sheet.getWidth() / 2));
 	}
 
 	/**
-	 * @return Translation Y value for the reveal sheet animation
+	 * @return Sheet reveal's center Y coordinate
 	 */
-	public int getRevealTranslationY() {
-		return sheet.getHeight() / SHEET_REVEAL_OFFSET_Y;
-	}
-
-	protected int getSheetRevealCenterX() {
-		return sheet.getWidth() / 2;
-	}
-
-	protected int getSheetRevealCenterY(View fab) {
-		return (int) ((sheet.getHeight() * (SHEET_REVEAL_OFFSET_Y - 1) / SHEET_REVEAL_OFFSET_Y) - fab
-				.getPivotY());
+	public int getSheetRevealCenterY(View fab) {
+		if (revealYDirection == RevealYDirection.UP) {
+			return (int) (sheet.getY()
+					+ (sheet.getHeight() * (SHEET_REVEAL_OFFSET_Y - 1) / SHEET_REVEAL_OFFSET_Y)
+					- (fab.getHeight() / 2));
+		}
+		return (int) (sheet.getY() + (sheet.getHeight() / SHEET_REVEAL_OFFSET_Y)
+				+ (fab.getHeight() / 2));
 	}
 
 	protected float getSheetRevealRadius() {
@@ -291,4 +324,11 @@ public class MaterialSheetAnimation {
 		return Math.max(fab.getWidth(), fab.getHeight()) / 2;
 	}
 
+	public RevealXDirection getRevealXDirection() {
+		return revealXDirection;
+	}
+
+	public RevealYDirection getRevealYDirection() {
+		return revealYDirection;
+	}
 }

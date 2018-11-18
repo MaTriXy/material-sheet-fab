@@ -13,6 +13,8 @@ import com.gordonwong.materialsheetfab.animations.FabAnimation;
 import com.gordonwong.materialsheetfab.animations.MaterialSheetAnimation;
 import com.gordonwong.materialsheetfab.animations.OverlayAnimation;
 
+import io.codetail.animation.arcanimator.Side;
+
 /**
  * Created by Gordon Wong on 7/9/2015.
  * 
@@ -29,8 +31,8 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 	// Animation durations
 	private static final int SHEET_ANIM_DURATION = (IS_LOLLIPOP ? 600 : 300) * ANIMATION_SPEED;
 	private static final int SHOW_SHEET_COLOR_ANIM_DURATION = (int) (SHEET_ANIM_DURATION * 0.75);
-	private static final int HIDE_SHEET_COLOR_ANIM_DURATION = IS_LOLLIPOP ? (int) (SHEET_ANIM_DURATION * 1.5)
-			: (SHEET_ANIM_DURATION * 2);
+	private static final int HIDE_SHEET_COLOR_ANIM_DURATION = IS_LOLLIPOP
+			? (int) (SHEET_ANIM_DURATION * 1.5) : (SHEET_ANIM_DURATION * 2);
 	private static final int FAB_ANIM_DURATION = 300 * ANIMATION_SPEED;
 	private static final int SHOW_OVERLAY_ANIM_DURATION = MaterialSheetFab.SHOW_SHEET_ANIM_DELAY
 			+ SHEET_ANIM_DURATION;
@@ -54,14 +56,32 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 	protected OverlayAnimation overlayAnimation;
 
 	// State
-	protected float anchorX;
-	protected float anchorY;
-	private boolean isAnimating;
-	private boolean isFabLaidOut;
+	protected int anchorX;
+	protected int anchorY;
+	private boolean isShowing;
+	private boolean isHiding;
+	private boolean hideSheetAfterSheetIsShown;
 
 	// Listeners
 	private MaterialSheetFabEventListener eventListener;
 
+	public enum RevealXDirection {
+		LEFT, RIGHT
+	}
+
+	public enum RevealYDirection {
+		UP, DOWN
+	}
+
+	/**
+	 * Creates a MaterialSheetFab instance and sets up the necessary click listeners.
+	 *
+	 * @param fab The FAB view.
+	 * @param sheet The sheet view.
+	 * @param overlay The overlay view.
+	 * @param sheetColor The background color of the material sheet.
+	 * @param fabColor The background color of the FAB.
+	 */
 	public MaterialSheetFab(FAB fab, View sheet, View overlay, int sheetColor, int fabColor) {
 		Interpolator interpolator = AnimationUtils.loadInterpolator(sheet.getContext(),
 				R.interpolator.msf_interpolator);
@@ -98,15 +118,15 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 		});
 
 		// Set listener for when FAB view is laid out
-		fab.getViewTreeObserver().addOnGlobalLayoutListener(
-				new ViewTreeObserver.OnGlobalLayoutListener() {
+		fab.getViewTreeObserver()
+				.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
 					@Override
 					public void onGlobalLayout() {
+						// Remove listener so that this is only called once
+						MaterialSheetFab.this.fab.getViewTreeObserver()
+								.removeGlobalOnLayoutListener(this);
 						// Initialize FAB anchor when the FAB view is laid out
-						if (!isFabLaidOut) {
-							updateFabAnchor();
-							isFabLaidOut = true;
-						}
+						updateFabAnchor();
 					}
 				});
 	}
@@ -140,7 +160,7 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 		if (isAnimating()) {
 			return;
 		}
-		setIsAnimating(true);
+		isShowing = true;
 
 		// Show overlay
 		overlayAnimation.show(SHOW_OVERLAY_ANIM_DURATION, null);
@@ -149,8 +169,19 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 		morphIntoSheet(new AnimationListener() {
 			@Override
 			public void onEnd() {
+				// Call event listener
+				if (eventListener != null) {
+					eventListener.onSheetShown();
+				}
+
 				// Assuming that this is the last animation to finish
-				setIsAnimating(false);
+				isShowing = false;
+
+				// Hide sheet after it is shown
+				if (hideSheetAfterSheetIsShown) {
+					hideSheet();
+					hideSheetAfterSheetIsShown = false;
+				}
 			}
 		});
 
@@ -169,9 +200,13 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 
 	protected void hideSheet(final AnimationListener endListener) {
 		if (isAnimating()) {
+			// Wait until the sheet is shown and then hide it
+			if (isShowing) {
+				hideSheetAfterSheetIsShown = true;
+			}
 			return;
 		}
-		setIsAnimating(true);
+		isHiding = true;
 
 		// Hide overlay
 		overlayAnimation.hide(HIDE_OVERLAY_ANIM_DURATION, null);
@@ -180,11 +215,16 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 		morphFromSheet(new AnimationListener() {
 			@Override
 			public void onEnd() {
+				// Call event listeners
 				if (endListener != null) {
 					endListener.onEnd();
 				}
+				if (eventListener != null) {
+					eventListener.onSheetHidden();
+				}
+
 				// Assuming that this is the last animation to finish
-				setIsAnimating(false);
+				isHiding = false;
 			}
 		});
 
@@ -224,8 +264,9 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 		sheetAnimation.alignSheetWithFab(fab);
 
 		// Morph FAB into sheet
-		float endY = anchorY - sheetAnimation.getRevealTranslationY();
-		fabAnimation.morphIntoSheet(sheetAnimation.getSheetCenterX(), endY, FAB_ARC_DEGREES,
+		fabAnimation.morphIntoSheet(sheetAnimation.getSheetRevealCenterX(),
+				sheetAnimation.getSheetRevealCenterY(fab),
+				getFabArcSide(sheetAnimation.getRevealXDirection()), FAB_ARC_DEGREES,
 				FAB_SCALE_FACTOR, FAB_ANIM_DURATION, null);
 
 		// Show sheet after a delay
@@ -254,8 +295,9 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 				sheetAnimation.setSheetVisibility(View.INVISIBLE);
 
 				// Show FAB
-				fabAnimation.morphFromSheet(anchorX, anchorY, FAB_ARC_DEGREES, -FAB_SCALE_FACTOR,
-						FAB_ANIM_DURATION, endListener);
+				fabAnimation.morphFromSheet(anchorX, anchorY,
+						getFabArcSide(sheetAnimation.getRevealXDirection()), FAB_ARC_DEGREES,
+						-FAB_SCALE_FACTOR, FAB_ANIM_DURATION, endListener);
 			}
 		}, MOVE_FAB_ANIM_DELAY);
 	}
@@ -266,16 +308,22 @@ public class MaterialSheetFab<FAB extends View & AnimatedFab> {
 	}
 
 	protected void setFabAnchor(float translationX, float translationY) {
-		anchorX = fab.getX() + fab.getPivotX() + (translationX - fab.getTranslationX());
-		anchorY = fab.getY() + fab.getPivotY() + (translationY - fab.getTranslationY());
+		anchorX = Math
+				.round(fab.getX() + (fab.getWidth() / 2) + (translationX - fab.getTranslationX()));
+		anchorY = Math
+				.round(fab.getY() + (fab.getHeight() / 2) + (translationY - fab.getTranslationY()));
 	}
 
-	private synchronized boolean isAnimating() {
-		return isAnimating;
+	private Side getFabArcSide(RevealXDirection revealXDirection) {
+		if (revealXDirection == RevealXDirection.LEFT) {
+			return Side.LEFT;
+		} else {
+			return Side.RIGHT;
+		}
 	}
 
-	private synchronized void setIsAnimating(boolean isAnimating) {
-		this.isAnimating = isAnimating;
+	private boolean isAnimating() {
+		return isShowing || isHiding;
 	}
 
 	public boolean isSheetVisible() {
